@@ -1,21 +1,20 @@
 'use client';
 
-import { BlockNoteSchema, createCodeBlockSpec } from '@blocknote/core';
-import {
-  CommentsExtension,
-  DefaultThreadStoreAuth,
-  YjsThreadStore,
-  type User as CommentUser,
-} from '@blocknote/core/comments';
+import { BlockNoteSchema, createCodeBlockSpec, type User as CommentUser } from '@blocknote/core';
+import { CommentsExtension, DefaultThreadStoreAuth } from '@blocknote/core/comments';
+import { YjsThreadStore, withCollaboration } from '@blocknote/core/yjs';
 import { en } from '@blocknote/core/locales';
 import {
   FloatingComposerController,
   FloatingThreadController,
+  SideMenuController,
   useCreateBlockNote,
 } from '@blocknote/react';
 import { BlockNoteView } from '@blocknote/shadcn';
 import '@blocknote/shadcn/style.css';
 import { codeBlockOptions } from '@blocknote/code-block';
+import { syntaxHighlighter } from './codeBlockHighlighter';
+import { CustomSideMenu, SIDE_MENU_FLOATING_OPTIONS } from './SideMenu';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CommentsSidebar, type CommentThreadStats } from '@/components/comments/CommentsSidebar';
 import { useTheme } from '@/hooks/useTheme.hook';
@@ -41,33 +40,90 @@ import {
 import type { SharedCommentUserProfile } from './comment.utils';
 import { useCommentComposerPatch } from './useCommentComposerPatch';
 
-const customCodeBlockOptions = {
-  ...codeBlockOptions,
-  createHighlighter: async () => {
-    const highlighter = await codeBlockOptions.createHighlighter();
-    const origCodeToTokens = highlighter.codeToTokens.bind(highlighter);
-    highlighter.codeToTokens = (code: string, options: Parameters<typeof origCodeToTokens>[1]) => {
-      // At runtime prosemirror-highlight falls back to a single `theme`
-      // (`{ theme: firstLoadedTheme }`), which the Shiki v4 type omits in favor
-      // of dual `themes`. Strip it so only dual `themes` applies.
-      const restOptions = { ...(options as unknown as Record<string, unknown>) };
-      delete restOptions.theme;
-      return origCodeToTokens(code, {
-        ...(restOptions as unknown as typeof options),
-        themes: {
-          light: 'github-light',
-          dark: 'github-dark',
-        },
-        defaultColor: false,
-      });
-    };
-    return highlighter;
+type CodeLanguageInfo = {
+  name: string;
+  aliases?: string[];
+};
+
+// Languages missing from `@blocknote/code-block`'s bundled list that users
+// already have in documents (e.g. via ```http) or commonly type. Without an
+// entry here, BlockNote 0.54's language dropdown throws
+// `Language <x> is not supported` and crashes the whole editor (upstream
+// TypeCellOS/BlockNote#3005; 0.51.x rendered these as plain text instead).
+// Kept in sync with the grammars in codeBlockHighlighter.ts so these
+// languages highlight instead of falling back to plain text.
+const EXTRA_CODE_LANGUAGES: Record<string, CodeLanguageInfo> = {
+  http: { name: 'HTTP', aliases: ['http'] },
+  go: { name: 'Go', aliases: ['go', 'golang'] },
+  dockerfile: { name: 'Dockerfile', aliases: ['dockerfile'] },
+  docker: { name: 'Docker', aliases: ['docker', 'docker-compose', 'compose'] },
+  diff: { name: 'Diff', aliases: ['diff', 'patch'] },
+  toml: { name: 'TOML', aliases: ['toml'] },
+  ini: {
+    name: 'INI',
+    aliases: ['ini', 'properties', 'prop', 'cfg', 'conf', 'config', 'env', 'dotenv'],
   },
+  nginx: { name: 'Nginx', aliases: ['nginx', 'nginx-conf'] },
+  apache: { name: 'Apache', aliases: ['apache', 'apacheconf', 'htaccess'] },
+  powershell: { name: 'PowerShell', aliases: ['powershell', 'ps1', 'psm1', 'psd1'] },
+  dart: { name: 'Dart', aliases: ['dart'] },
+  proto: { name: 'Protocol Buffers', aliases: ['proto', 'protobuf'] },
+  bat: { name: 'Batch', aliases: ['bat', 'batch', 'cmd'] },
+  elixir: { name: 'Elixir', aliases: ['elixir', 'ex', 'exs'] },
+  clojure: { name: 'Clojure', aliases: ['clojure', 'clj', 'cljs', 'cljc'] },
+  groovy: { name: 'Groovy', aliases: ['groovy', 'gvy', 'gradle'] },
+  perl: { name: 'Perl', aliases: ['perl', 'pl', 'pm'] },
+  solidity: { name: 'Solidity', aliases: ['solidity', 'sol'] },
+  vim: { name: 'Vim', aliases: ['vim', 'viml', 'vimscript'] },
+  matlab: { name: 'MATLAB', aliases: ['matlab', 'octave'] },
+};
+
+// Wraps the supported-languages map so BlockNote never throws on an unknown
+// language (including "" from a bare ``` + Enter). Any string reports as
+// supported, so such blocks fall back to plain text instead of crashing —
+// restoring the tolerant 0.51.x behavior. Enumeration (dropdown options,
+// alias resolution) only sees the real entries, so the picker is unchanged
+// apart from EXTRA_CODE_LANGUAGES above.
+export function createTolerantSupportedLanguages(
+  base: Record<string, CodeLanguageInfo>
+): Record<string, CodeLanguageInfo> {
+  const target: Record<string, CodeLanguageInfo> = { ...base, ...EXTRA_CODE_LANGUAGES };
+  const fallbackFor = (p: string): CodeLanguageInfo => ({
+    name: p || 'Plain Text',
+    aliases: [],
+  });
+  return new Proxy(target, {
+    has: (t, p) => (typeof p === 'string' ? true : p in t),
+    get: (t, p, receiver) => {
+      if (typeof p === 'string' && !(p in t)) {
+        return fallbackFor(p);
+      }
+      return Reflect.get(t, p, receiver);
+    },
+    getOwnPropertyDescriptor: (t, p) => {
+      if (typeof p === 'string' && !(p in t)) {
+        // configurable:true satisfies Proxy invariants; enumerable:false keeps
+        // Object.keys/entries limited to real entries (dropdown unchanged).
+        return {
+          configurable: true,
+          enumerable: false,
+          value: fallbackFor(p),
+          writable: false,
+        };
+      }
+      return Reflect.getOwnPropertyDescriptor(t, p);
+    },
+  });
+}
+
+const extendedCodeBlockOptions = {
+  ...codeBlockOptions,
+  supportedLanguages: createTolerantSupportedLanguages(codeBlockOptions.supportedLanguages),
 };
 
 const editorSchema = BlockNoteSchema.create().extend({
   blockSpecs: {
-    codeBlock: createCodeBlockSpec(customCodeBlockOptions),
+    codeBlock: createCodeBlockSpec(extendedCodeBlockOptions),
   },
 });
 
@@ -283,10 +339,9 @@ export function EditorContent({
   }, [threadStore, activeCommentUser.id]);
 
   const editorExtensions = useMemo(() => {
-    // NOTE: @blocknote/code-block@0.51.4 only exports `codeBlockOptions` —
-    // highlighting is embedded in the codeBlock spec via `createHighlighter`,
-    // no separate `syntaxHighlighter` extension exists in this version.
-    return [CommentsExtension({ threadStore, resolveUsers })];
+    // Custom Shiki highlighter (github-dark/light, extended language set from
+    // codeBlockHighlighter.ts) alongside the comments extension.
+    return [CommentsExtension({ threadStore, resolveUsers }), syntaxHighlighter];
   }, [resolveUsers, threadStore]);
 
   // Use the continuous awareness instance tied to ydoc (or fallback to realtimeProvider)
@@ -325,7 +380,7 @@ export function EditorContent({
   ]);
 
   const editor = useCreateBlockNote(
-    {
+    withCollaboration({
       schema: editorSchema,
       tables: {
         splitCells: true,
@@ -347,7 +402,7 @@ export function EditorContent({
       },
       dictionary: commentsDictionary,
       extensions: editorExtensions,
-    },
+    }),
     // The editor is created strictly once per document mount. Keyed by documentId at parent.
     [documentId, ydoc]
   );
@@ -501,7 +556,7 @@ export function EditorContent({
             formattingToolbar={!isViewer}
             linkToolbar={!isViewer}
             slashMenu={!isViewer}
-            sideMenu={!isViewer}
+            sideMenu={false}
             filePanel={!isViewer}
             tableHandles={!isViewer}
             emojiPicker={!isViewer}
@@ -510,6 +565,12 @@ export function EditorContent({
             <span ref={sendIconTemplateRef} className="sr-only" aria-hidden="true">
               <Send size={14} strokeWidth={1.75} />
             </span>
+            {!isViewer && (
+              <SideMenuController
+                floatingUIOptions={SIDE_MENU_FLOATING_OPTIONS}
+                sideMenu={CustomSideMenu}
+              />
+            )}
             {commentsUiEnabled && (
               <FloatingComposerController
                 floatingUIOptions={{
