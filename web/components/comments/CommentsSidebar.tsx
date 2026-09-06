@@ -87,7 +87,7 @@ export function CommentsSidebar({
   }, [threads]);
 
   useSyncExternalStore(
-    (onStoreChange) => comments.userStore.subscribe(() => onStoreChange()),
+    (onStoreChange) => comments.userStore.store.subscribe(() => onStoreChange()),
     () => resolvedByUserIds.map((id) => comments.userStore.getUser(id)?.id ?? '').join('|'),
     () => ''
   );

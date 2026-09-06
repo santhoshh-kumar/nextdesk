@@ -2,7 +2,7 @@ import { render as baseRender, screen, fireEvent, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { Provider } from 'react-redux';
-import { configureStore } from '@reduxjs/toolkit';
+import { combineReducers, configureStore } from '@reduxjs/toolkit';
 import { DocToolbar } from '../../../components/DocToolbar';
 import sidebarReducer from '../../../stores/sidebar/sidebar.slice';
 import sidebarTreeReducer from '../../../stores/sidebarTree/sidebarTree.slice';
@@ -31,19 +31,25 @@ jest.mock('../../../services/document.service', () => ({
   },
 }));
 
-function createTestStore(preloadedState?: Record<string, unknown>) {
+const testReducers = {
+  sidebar: sidebarReducer,
+  sidebarTree: sidebarTreeReducer,
+  sharedTree: sharedTreeReducer,
+  auth: authReducer,
+};
+
+const testRootReducer = combineReducers(testReducers);
+
+type TestRootState = ReturnType<typeof testRootReducer>;
+
+function createTestStore(preloadedState?: Partial<TestRootState>) {
   return configureStore({
-    reducer: {
-      sidebar: sidebarReducer,
-      sidebarTree: sidebarTreeReducer,
-      sharedTree: sharedTreeReducer,
-      auth: authReducer,
-    },
+    reducer: testRootReducer,
     preloadedState,
   });
 }
 
-function renderWithStore(ui: React.ReactElement, preloadedState?: Record<string, unknown>) {
+function renderWithStore(ui: React.ReactElement, preloadedState?: Partial<TestRootState>) {
   const store = createTestStore(preloadedState);
   return {
     ...baseRender(<Provider store={store}>{ui}</Provider>),

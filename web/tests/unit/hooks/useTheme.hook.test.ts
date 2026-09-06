@@ -5,14 +5,22 @@ import { configureStore } from '@reduxjs/toolkit';
 import themeReducer from '../../../stores/theme/theme.slice';
 import { useTheme } from '../../../hooks/useTheme.hook';
 
-const renderHook = <T>(render: () => T, options?: Parameters<typeof baseRenderHook>[1]) => {
+const renderHook = <T>(
+  render: () => T,
+  options?: Omit<Parameters<typeof baseRenderHook>[1], 'wrapper'> & {
+    wrapper?: React.ComponentType<{ children: React.ReactNode }>;
+  }
+) => {
   const store = configureStore({
     reducer: {
       theme: themeReducer,
     },
   });
+  const wrapper: React.ComponentType<{ children: React.ReactNode }> = ({ children }) =>
+    // eslint-disable-next-line react/no-children-prop -- .ts file can't use JSX; children-as-prop is the typed equivalent here
+    React.createElement(Provider, { store, children });
   return baseRenderHook(render, {
-    wrapper: ({ children }) => React.createElement(Provider, { store }, children),
+    wrapper,
     ...options,
   });
 };

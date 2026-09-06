@@ -30,7 +30,7 @@ jest.mock('../../../hooks/useCloudBackoff.hook', () => ({
 
 const renderHook = <Result, Props>(
   render: (props: Props) => Result,
-  options?: Parameters<typeof baseRenderHook>[1]
+  options?: Omit<Parameters<typeof baseRenderHook>[1], 'wrapper'>
 ) => {
   const authMock = (useAuth as jest.Mock)();
 

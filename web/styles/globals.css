@@ -500,7 +500,7 @@ div.bn-table-drop-cursor {
 
   /* Shiki Syntax Highlighting — Light Mode */
   .bn-block-content[data-content-type="codeBlock"] .shiki {
-    color: var(--shiki-light, inherit);
+    color: var(--shiki-light, inherit) !important;
   }
 
   /* Code Block Background & Text — Dark Mode */
@@ -515,7 +515,7 @@ div.bn-table-drop-cursor {
   .dark .bn-block-content[data-content-type="codeBlock"] .shiki,
   .bn-root[data-color-scheme="dark"] .bn-block-content[data-content-type="codeBlock"] .shiki,
   .bn-container[data-color-scheme="dark"] .bn-block-content[data-content-type="codeBlock"] .shiki {
-    color: var(--shiki-dark, inherit);
+    color: var(--shiki-dark, inherit) !important;
   }
 
   /* Code Block Language Picker */

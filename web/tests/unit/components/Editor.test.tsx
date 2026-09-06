@@ -34,6 +34,10 @@ jest.mock('@blocknote/react', () => {
     FormattingToolbarController: () => null,
     FloatingComposerController: () => null,
     FloatingThreadController: () => null,
+    SideMenuController: () => null,
+    AddBlockButton: () => null,
+    DragHandleButton: () => null,
+    useExtensionState: jest.fn(),
     ThreadsSidebar: () => <div data-testid="threads-sidebar" />,
   };
 });
@@ -67,11 +71,28 @@ jest.mock('@blocknote/core/comments', () => ({
   CommentsExtension: jest.fn(() => ({})),
   ThreadStoreAuth: class ThreadStoreAuth {},
   DefaultThreadStoreAuth: jest.fn(),
+}));
+
+jest.mock('@blocknote/core/extensions', () => ({
+  SideMenuExtension: {},
+}));
+
+jest.mock('@blocknote/core/yjs', () => ({
   YjsThreadStore: jest.fn(),
+  withCollaboration: jest.fn((options) => options),
 }));
 
 jest.mock('@blocknote/code-block', () => ({
-  codeBlockOptions: { defaultLanguage: 'javascript', createHighlighter: jest.fn() },
+  codeBlockOptions: {
+    defaultLanguage: 'javascript',
+    supportedLanguages: {
+      javascript: { name: 'JavaScript', aliases: ['javascript', 'js'] },
+    },
+  },
+}));
+
+jest.mock('../../../components/editor/codeBlockHighlighter', () => ({
+  syntaxHighlighter: { key: 'syntaxHighlighter' },
 }));
 
 jest.mock('../../../services/document.service', () => ({
@@ -96,7 +117,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useCreateBlockNote } from '@blocknote/react';
 import { BlockNoteView } from '@blocknote/shadcn';
 import { createCodeBlockSpec } from '@blocknote/core';
-import { codeBlockOptions } from '@blocknote/code-block';
+import { syntaxHighlighter } from '../../../components/editor/codeBlockHighlighter';
 import { CommentsExtension } from '@blocknote/core/comments';
 import { OFFLINE_DOCUMENT_SELECT_EVENT } from '../../../lib/offline-navigation.util';
 import * as Y from 'yjs';
@@ -125,10 +146,8 @@ jest.mock('../../../hooks/useTheme.hook', () => ({
 }));
 
 // createCodeBlockSpec is called once at EditorContent module load, before
-// beforeEach(jest.clearAllMocks()) wipes mock history. Capture the custom
-// options here so the highlighter wrapper test can invoke it later.
-const capturedCustomCodeBlockOptions = (createCodeBlockSpec as unknown as jest.Mock).mock
-  .calls[0]?.[0];
+// beforeEach(jest.clearAllMocks()) wipes mock history. Capture it here.
+const capturedCodeBlockOptions = (createCodeBlockSpec as unknown as jest.Mock).mock.calls[0]?.[0];
 
 describe('Editor Component', () => {
   const mockUpdateMeta = jest.fn();
@@ -621,7 +640,7 @@ describe('Editor Component', () => {
     const useCreateBlockNoteMock = useCreateBlockNote as unknown as jest.Mock;
     const lastConfig =
       useCreateBlockNoteMock.mock.calls[useCreateBlockNoteMock.mock.calls.length - 1][0];
-    expect(lastConfig.extensions).toHaveLength(1);
+    expect(lastConfig.extensions).toHaveLength(2);
     expect(CommentsExtension).toHaveBeenCalled();
   });
 
@@ -651,36 +670,53 @@ describe('Editor Component', () => {
     });
   });
 
-  it('should strip single theme and force dual themes in code highlighter', async () => {
-    const origCodeToTokens = jest.fn().mockReturnValue({ tokens: [] });
-    const fakeHighlighter = { codeToTokens: origCodeToTokens };
-    (codeBlockOptions.createHighlighter as jest.Mock).mockResolvedValue(fakeHighlighter);
+  it('should initialize BlockNote with codeBlock schema and syntax highlighter', () => {
+    render(<Editor />);
 
-    const createCodeBlockSpecMock = createCodeBlockSpec as unknown as jest.Mock;
-    const customOptions =
-      capturedCustomCodeBlockOptions ??
-      createCodeBlockSpecMock.mock.calls[createCodeBlockSpecMock.mock.calls.length - 1]?.[0];
-    expect(customOptions?.createHighlighter).toBeDefined();
-
-    const wrappedHighlighter = await customOptions.createHighlighter();
-    expect(wrappedHighlighter).toBe(fakeHighlighter);
-
-    wrappedHighlighter.codeToTokens('const x = 1', {
-      lang: 'javascript',
-      theme: 'github-dark',
-    });
-
-    expect(origCodeToTokens).toHaveBeenCalledTimes(1);
-    const [codeArg, optionsArg] = origCodeToTokens.mock.calls[0];
-    expect(codeArg).toBe('const x = 1');
-    expect(optionsArg).toEqual(
-      expect.objectContaining({
-        lang: 'javascript',
-        themes: { light: 'github-light', dark: 'github-dark' },
-        defaultColor: false,
-      })
+    // Extended options keep the bundled defaults and add back languages that
+    // exist in user documents but are missing from the BlockNote bundle (http).
+    expect(capturedCodeBlockOptions?.supportedLanguages).toBeDefined();
+    expect(capturedCodeBlockOptions.supportedLanguages.javascript).toEqual(
+      expect.objectContaining({ name: 'JavaScript' })
     );
-    expect(optionsArg).not.toHaveProperty('theme');
+    expect(capturedCodeBlockOptions.supportedLanguages.http).toEqual(
+      expect.objectContaining({ name: 'HTTP' })
+    );
+
+    // Unknown languages (or "" from a bare ``` + Enter) must never throw
+    // `Language <x> is not supported` (upstream TypeCellOS/BlockNote#3005).
+    expect('http' in capturedCodeBlockOptions.supportedLanguages).toBe(true);
+    expect('definitely-not-a-language' in capturedCodeBlockOptions.supportedLanguages).toBe(true);
+    expect('' in capturedCodeBlockOptions.supportedLanguages).toBe(true);
+
+    // hasOwnProperty / getOwnPropertyDescriptor must agree with `in` so a
+    // future upstream switch away from `in` still falls back to plain text.
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        capturedCodeBlockOptions.supportedLanguages,
+        'definitely-not-a-language'
+      )
+    ).toBe(true);
+    expect(
+      Object.getOwnPropertyDescriptor(
+        capturedCodeBlockOptions.supportedLanguages,
+        'definitely-not-a-language'
+      )?.value
+    ).toEqual(expect.objectContaining({ aliases: [] }));
+    expect(Object.hasOwn(capturedCodeBlockOptions.supportedLanguages, '')).toBe(true);
+
+    // Enumeration still only lists real languages for the dropdown.
+    expect(Object.keys(capturedCodeBlockOptions.supportedLanguages)).toContain('http');
+    expect(Object.keys(capturedCodeBlockOptions.supportedLanguages)).toContain('javascript');
+    expect(Object.keys(capturedCodeBlockOptions.supportedLanguages)).not.toContain(
+      'definitely-not-a-language'
+    );
+    expect(Object.keys(capturedCodeBlockOptions.supportedLanguages)).not.toContain('');
+
+    const useCreateBlockNoteMock = useCreateBlockNote as unknown as jest.Mock;
+    const lastConfig =
+      useCreateBlockNoteMock.mock.calls[useCreateBlockNoteMock.mock.calls.length - 1][0];
+    expect(lastConfig.extensions).toContain(syntaxHighlighter);
   });
 
   it('should preserve selection for first comment click in comment-only mode', () => {
